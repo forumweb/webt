@@ -2,14 +2,10 @@ const express = require('express');
 const fs = require('fs');
 const cors = require('cors');
 const crypto = require('crypto');
+const security = require('./security');
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// Fungsi untuk hash password
-function hashPassword(password) {
-  return crypto.createHash('sha256').update(password).digest('hex');
-}
 
 // USERS
 const USERS_FILE = './users.json';
@@ -21,36 +17,101 @@ function loadUsers() {
 function saveUsers(users) {
   fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
 }
-app.get('/users', (req, res) => { res.json(loadUsers().map(({ password, ...u }) => u)); });
-app.get('/users/:userId', (req, res) => {
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+// REGISTER user multi-entitas
+app.post('/users', async (req, res) => {
+  const { username, email, password, userAgent, screen } = req.body;
+  if (!username || !email || !password || !userAgent || !screen)
+    return res.status(400).json({ error: 'Semua field wajib diisi' });
+
   const users = loadUsers();
-  const user = users.find(u => u.id == req.params.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  const { password, ...userNoPw } = user;
-  res.json(userNoPw);
-});
-app.post('/users', (req, res) => {
-  const { username, email, password } = req.body;
-  if (!username || !email || !password) return res.status(400).json({ error: 'Semua field wajib diisi' });
-  const users = loadUsers();
-  if (users.find(u => u.email === email)) return res.status(400).json({ error: 'Email sudah terpakai' });
+  if (users.find(u => u.email === email))
+    return res.status(400).json({ error: 'Email sudah terpakai' });
+
+  // Generate fingerprint
+  const salt = crypto.randomBytes(8).toString('hex');
+  const fingerprint = security.generateDeviceFingerprint({ userAgent, screen, salt });
+
+  // Generate TOTP secret and QR code
+  const totpSecretObj = security.generateTOTPSecret(email);
+  const totpSecret = totpSecretObj.base32;
+  const otpauth_url = totpSecretObj.otpauth_url;
+  const qrCode = await security.generateQRCode(otpauth_url);
+
+  // Generate RSA keypair for device
+  const { publicKey, privateKey } = security.generateKeypair();
+
+  // Save user
   const hashed = hashPassword(password);
-  const newUser = { id: Date.now(), username, email, password: hashed, bookmarks: [], balance: 0 };
+  const newUser = {
+    id: Date.now(),
+    username,
+    email,
+    password: hashed,
+    bookmarks: [],
+    balance: 0,
+    totpSecret,
+    trustedDevices: [{ fingerprint, salt, userAgent, screen, registeredAt: Date.now() }],
+    publicKey,
+    // DO NOT save privateKey in server, only in device
+  };
   users.push(newUser);
   saveUsers(users);
-  const { password: pw, ...userNoPw } = newUser;
-  res.json(userNoPw);
+
+  // Return QR code (base64), fingerprint, publicKey (send privateKey only to device)
+  res.json({
+    id: newUser.id,
+    username: newUser.username,
+    email: newUser.email,
+    totpQR: qrCode,
+    totpSecret,
+    fingerprint,
+    publicKey,
+    salt
+  });
 });
 
-// LOGIN
+// LOGIN multi-entitas
 app.post('/login', (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, fingerprint, totp, challengeResponse } = req.body;
   const users = loadUsers();
   const hashed = hashPassword(password);
   const user = users.find(u => u.email === email && u.password === hashed);
   if (!user) return res.status(401).json({ error: 'Email/password salah' });
-  const { password: pw, ...userNoPw } = user;
+
+  // Check fingerprint
+  const trusted = user.trustedDevices?.find(d => d.fingerprint === fingerprint);
+  if (!trusted) return res.status(403).json({ error: 'Device not trusted' });
+
+  // Verify TOTP
+  if (!security.verifyTOTP(user.totpSecret, totp))
+    return res.status(403).json({ error: 'Kode TOTP salah' });
+
+  // Challenge-response: simple (just echo), upgrade to real cryptography for full version
+  if (challengeResponse !== 'accepted')
+    return res.status(403).json({ error: 'Challenge response invalid' });
+
+  // Passed all checks
+  const { password: pw, totpSecret, trustedDevices, ...userNoPw } = user;
   res.json(userNoPw);
+});
+
+// Endpoint: bind device (add fingerprint)
+app.post('/users/:userId/bind-device', (req, res) => {
+  const { fingerprint, userAgent, screen, salt } = req.body;
+  const users = loadUsers();
+  const user = users.find(u => u.id == req.params.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.trustedDevices?.find(d => d.fingerprint === fingerprint))
+    return res.status(400).json({ error: 'Device sudah terdaftar' });
+
+  user.trustedDevices = user.trustedDevices || [];
+  user.trustedDevices.push({ fingerprint, salt, userAgent, screen, registeredAt: Date.now() });
+  saveUsers(users);
+  res.json({ trustedDevices: user.trustedDevices });
 });
 
 // BOOKMARK
@@ -231,4 +292,4 @@ app.post('/notifications', (req, res) => {
 // Test endpoint
 app.get('/', (req, res) => { res.send('API Romusha File JSON Jalan!'); });
 
-app.listen(3000, () => console.log('Server jalan di port 3000 (File JSON)'));
+app.listen(3000, () => console.log('Server jalan di port 3000 (File JSON, Multi-Entitas Security)'));
