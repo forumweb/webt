@@ -1,45 +1,29 @@
 import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import Header from './components/Header';
-import Sidebar from './components/Sidebar';
+import Header from './components/Header';                                        import Sidebar from './components/Sidebar';
 import ForumHome from './pages/ForumHome';
-import Dashboard from './pages/Dashboard';
-import Profile from './pages/Profile';
-import AdminPanel from './pages/AdminPanel';
-import MyActivity from './pages/MyActivity';
-import Categories from './pages/Categories';
-import Search from './pages/Search';
-import Notifications from './pages/Notifications';
-import AccountSettings from './pages/AccountSettings';
-import Analytics from './pages/Analytics';
-import ThreadDetail from './pages/ThreadDetail';
+import Dashboard from './pages/Dashboard';                                       import Profile from './pages/Profile';
+import AdminPanel from './pages/AdminPanel';                                     import MyActivity from './pages/MyActivity';
+import Categories from './pages/Categories';                                     import Search from './pages/Search';
+import Notifications from './pages/Notifications';                               import AccountSettings from './pages/AccountSettings';
+import Analytics from './pages/Analytics';                                       import ThreadDetail from './pages/ThreadDetail';
 import UserProfile from './pages/UserProfile';
-import { useAuth } from './context/AuthContext';
-import LoginRegisterModal from './components/LoginRegisterModal';
+import { useAuth } from './context/AuthContext';                                 import LoginRegisterModal from './components/LoginRegisterModal';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   return user ? <>{children}</> : <Navigate to="/" />;
 }
 function AdminProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth();
-  return user && user.role === "admin" ? <>{children}</> : <Navigate to="/" />;
-}
-
-export default function App() {
-  const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-
-  React.useEffect(() => {
-    document.body.style.overflow = (isSidebarOpen || authModalOpen) ? "hidden" : "";
-    return () => { document.body.style.overflow = ""; };
-  }, [isSidebarOpen, authModalOpen]);
-
-  return (
-    <Router>
-      <div className="min-h-screen flex flex-col bg-gray-50">
-        <Header
+  const { user } = useAuth();                                                      return user && user.role === "admin" ? <>{children}</> : <Navigate to="/" />;
+}                                                                                
+export default function App() {                                                    const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);                       const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+                                                                                   React.useEffect(() => {
+    document.body.style.overflow = (isSidebarOpen || authModalOpen) ? "hidden" : "";                                                                                  return () => { document.body.style.overflow = ""; };
+  }, [isSidebarOpen, authModalOpen]);                                            
+  return (                                                                           <Router>
+      <div className="min-h-screen flex flex-col bg-gray-50">                            <Header
           onAuthClick={() => setAuthModalOpen(true)}
           onMenuToggle={() => setIsSidebarOpen(!isSidebarOpen)}
         />
@@ -107,60 +91,36 @@ export default function App() {
               <Route
                 path="/notifications"
                 element={
-                  <ProtectedRoute>
-                    <Notifications />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/settings"
-                element={
-                  <ProtectedRoute>
-                    <AccountSettings />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/analytics"
-                element={
+                  <ProtectedRoute>                                                                   <Notifications />
+                  </ProtectedRoute>                                                              }
+              />                                                                               <Route
+                path="/settings"                                                                 element={
+                  <ProtectedRoute>                                                                   <AccountSettings />
+                  </ProtectedRoute>                                                              }
+              />                                                                               <Route
+                path="/analytics"                                                                element={
                   <AdminProtectedRoute>
                     <Analytics />
                   </AdminProtectedRoute>
                 }
-              />
-              <Route
-                path="/admin"
-                element={
-                  <AdminProtectedRoute>
-                    <AdminPanel />
-                  </AdminProtectedRoute>
-                }
-              />
-              <Route
-                path="/thread/:threadId"
-                element={
-                  <ProtectedRoute>
-                    <ThreadDetail />
-                  </ProtectedRoute>
-                }
+              />                                                                               <Route
+                path="/admin"                                                                    element={
+                  <AdminProtectedRoute>                                                              <AdminPanel />
+                  </AdminProtectedRoute>                                                         }
+              />                                                                               <Route
+                path="/thread/:threadId"                                                         element={
+                  <ProtectedRoute>                                                                   <ThreadDetail />
+                  </ProtectedRoute>                                                              }
               />
               <Route
                 path="/profile/:username"
                 element={
-                  <ProtectedRoute>
-                    <UserProfile />
-                  </ProtectedRoute>
-                }
-              />
-              <Route path="*" element={<Navigate to="/" />} />
-            </Routes>
-          </main>
-        </div>
-        <LoginRegisterModal
-          isOpen={authModalOpen}
-          onClose={() => setAuthModalOpen(false)}
-        />
-      </div>
-    </Router>
-  );
-}
+                  <ProtectedRoute>                                                                   <UserProfile />
+                  </ProtectedRoute>                                                              }
+              />                                                                               <Route path="*" element={<Navigate to="/" />} />
+            </Routes>                                                                      </main>
+        </div>                                                                           <LoginRegisterModal
+          isOpen={authModalOpen}                                                           onClose={() => setAuthModalOpen(false)}
+        />                                                                             </div>
+    </Router>                                                                      );
+                              }
