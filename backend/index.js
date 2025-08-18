@@ -5,8 +5,7 @@ const crypto = require('crypto');
 const security = require('./security');
 const app = express();
 app.use(cors());
-app.use(express.json());
-
+app.use(express.json());                                                         
 // USERS
 const USERS_FILE = './users.json';
 function loadUsers() {
@@ -21,15 +20,28 @@ function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
 
+// Generate paraphrase: 5 karakter acak (huruf besar, kecil, angka)
+function generateParaphrase() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let p = '';
+  for (let i = 0; i < 5; i++) p += chars[Math.floor(Math.random() * chars.length)];
+  return p;
+}
+
 // REGISTER user multi-entitas
 app.post('/users', async (req, res) => {
-  const { username, email, password, userAgent, screen } = req.body;
-  if (!username || !email || !password || !userAgent || !screen)
-    return res.status(400).json({ error: 'Semua field wajib diisi' });
+  const { username, email, password, userAgent, screen } = req.body;               if (!username || !email || !password || !userAgent || !screen)
+    return res.status(400).json({ error: 'Semua field wajib diisi' });           
+  // Validasi hanya Gmail
+  if (!/@gmail\.com$/i.test(email.trim()))
+    return res.status(400).json({ error: 'Hanya email Gmail yang diizinkan' });
 
   const users = loadUsers();
   if (users.find(u => u.email === email))
     return res.status(400).json({ error: 'Email sudah terpakai' });
+
+  // Generate paraphrase
+  const paraphrase = generateParaphrase();
 
   // Generate fingerprint
   const salt = crypto.randomBytes(8).toString('hex');
@@ -42,7 +54,7 @@ app.post('/users', async (req, res) => {
   const qrCode = await security.generateQRCode(otpauth_url);
 
   // Generate RSA keypair for device
-  const { publicKey, privateKey } = security.generateKeypair();
+  const { publicKey } = security.generateKeypair();
 
   // Save user
   const hashed = hashPassword(password);
@@ -51,17 +63,17 @@ app.post('/users', async (req, res) => {
     username,
     email,
     password: hashed,
+    paraphrase,
     bookmarks: [],
     balance: 0,
     totpSecret,
-    trustedDevices: [{ fingerprint, salt, userAgent, screen, registeredAt: Date.now() }],
+    trustedDevices: [
+      { fingerprint, salt, userAgent, screen, registeredAt: Date.now() }
+    ],
     publicKey,
-    // DO NOT save privateKey in server, only in device
   };
-  users.push(newUser);
-  saveUsers(users);
+  users.push(newUser);                                                             saveUsers(users);
 
-  // Return QR code (base64), fingerprint, publicKey (send privateKey only to device)
   res.json({
     id: newUser.id,
     username: newUser.username,
@@ -69,8 +81,8 @@ app.post('/users', async (req, res) => {
     totpQR: qrCode,
     totpSecret,
     fingerprint,
-    publicKey,
-    salt
+    salt,
+    paraphrase
   });
 });
 
@@ -80,38 +92,60 @@ app.post('/login', (req, res) => {
   const users = loadUsers();
   const hashed = hashPassword(password);
   const user = users.find(u => u.email === email && u.password === hashed);
-  if (!user) return res.status(401).json({ error: 'Email/password salah' });
-
-  // Check fingerprint
+  if (!user) return res.status(401).json({ error: 'Email/password salah' });     
+  // Device check
   const trusted = user.trustedDevices?.find(d => d.fingerprint === fingerprint);
-  if (!trusted) return res.status(403).json({ error: 'Device not trusted' });
-
+  if (!trusted) return res.status(403).json({ error: 'Device not trusted' });    
   // Verify TOTP
   if (!security.verifyTOTP(user.totpSecret, totp))
     return res.status(403).json({ error: 'Kode TOTP salah' });
 
-  // Challenge-response: simple (just echo), upgrade to real cryptography for full version
   if (challengeResponse !== 'accepted')
     return res.status(403).json({ error: 'Challenge response invalid' });
 
-  // Passed all checks
   const { password: pw, totpSecret, trustedDevices, ...userNoPw } = user;
-  res.json(userNoPw);
-});
+  res.json(userNoPw);                                                            });
 
-// Endpoint: bind device (add fingerprint)
-app.post('/users/:userId/bind-device', (req, res) => {
-  const { fingerprint, userAgent, screen, salt } = req.body;
+// Bind device via email + paraphrase
+app.post('/bind-device', (req, res) => {
+  const { email, paraphrase, userAgent, screen } = req.body;                       if (!email || !paraphrase || !userAgent || !screen)
+    return res.status(400).json({ error: 'Email, paraphrase, userAgent, screen wajib diisi' });
+
   const users = loadUsers();
-  const user = users.find(u => u.id == req.params.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  const user = users.find(
+    u => u.email === email && u.paraphrase === paraphrase
+  );
+  if (!user) return res.status(404).json({ error: 'User/paraphrase tidak cocok' });
+
+  // Generate new fingerprint untuk perangkat ini
+  const salt = crypto.randomBytes(8).toString('hex');
+  const fingerprint = security.generateDeviceFingerprint({ userAgent, screen, salt });
+
   if (user.trustedDevices?.find(d => d.fingerprint === fingerprint))
     return res.status(400).json({ error: 'Device sudah terdaftar' });
 
   user.trustedDevices = user.trustedDevices || [];
-  user.trustedDevices.push({ fingerprint, salt, userAgent, screen, registeredAt: Date.now() });
+  user.trustedDevices.push({
+    fingerprint,
+    salt,                                                                            userAgent,
+    screen,
+    registeredAt: Date.now()
+  });
   saveUsers(users);
-  res.json({ trustedDevices: user.trustedDevices });
+  res.json({ trustedDevices: user.trustedDevices, fingerprint });
+});
+                                                                                 // GET user by email (untuk frontend lookup userId, jika perlu)
+app.get('/users', (req, res) => {
+  const { email } = req.query;
+  if (!email) return res.status(400).json({ error: 'Email wajib diisi' });
+  const users = loadUsers();
+  const user = users.find(u => u.email === email);
+  if (!user) return res.status(404).json({ error: 'User tidak ditemukan' });
+  res.json({
+    id: user.id,
+    email: user.email,
+    username: user.username,
+  });
 });
 
 // BOOKMARK
@@ -150,11 +184,9 @@ app.post('/users/:userId/topup', (req, res) => {
   const { amount } = req.body;
   const users = loadUsers();
   const user = users.find(u => u.id == req.params.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  const nominal = parseInt(amount, 10);
+  if (!user) return res.status(404).json({ error: 'User not found' });             const nominal = parseInt(amount, 10);
   if (isNaN(nominal) || nominal <= 0) return res.status(400).json({ error: 'Nominal harus lebih dari 0' });
-  user.balance = (user.balance || 0) + nominal;
-  saveUsers(users);
+  user.balance = (user.balance || 0) + nominal;                                    saveUsers(users);
   res.json({ balance: user.balance });
 });
 
@@ -163,11 +195,9 @@ app.post('/users/:userId/withdraw', (req, res) => {
   const { amount } = req.body;
   const users = loadUsers();
   const user = users.find(u => u.id == req.params.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  const nominal = parseInt(amount, 10);
+  if (!user) return res.status(404).json({ error: 'User not found' });             const nominal = parseInt(amount, 10);
   if (isNaN(nominal) || nominal <= 0) return res.status(400).json({ error: 'Nominal harus lebih dari 0' });
-  if ((user.balance || 0) < nominal) return res.status(400).json({ error: 'Saldo tidak cukup' });
-  user.balance -= nominal;
+  if ((user.balance || 0) < nominal) return res.status(400).json({ error: 'Saldo tidak cukup' });                                                                   user.balance -= nominal;
   saveUsers(users);
   res.json({ balance: user.balance });
 });
@@ -175,14 +205,12 @@ app.post('/users/:userId/withdraw', (req, res) => {
 // Transfer saldo ke user lain
 app.post('/users/:userId/transfer', (req, res) => {
   const { toUserId, amount } = req.body;
-  const users = loadUsers();
-  const user = users.find(u => u.id == req.params.userId);
+  const users = loadUsers();                                                       const user = users.find(u => u.id == req.params.userId);
   const toUser = users.find(u => u.id == toUserId);
   if (!user) return res.status(404).json({ error: 'User asal tidak ditemukan' });
   if (!toUser) return res.status(404).json({ error: 'User tujuan tidak ditemukan' });
   const nominal = parseInt(amount, 10);
-  if (isNaN(nominal) || nominal <= 0) return res.status(400).json({ error: 'Nominal transfer harus lebih dari 0' });
-  if ((user.balance || 0) < nominal) return res.status(400).json({ error: 'Saldo tidak cukup' });
+  if (isNaN(nominal) || nominal <= 0) return res.status(400).json({ error: 'Nominal transfer harus lebih dari 0' });                                                if ((user.balance || 0) < nominal) return res.status(400).json({ error: 'Saldo tidak cukup' });
   user.balance -= nominal;
   toUser.balance = (toUser.balance || 0) + nominal;
   saveUsers(users);
@@ -219,37 +247,29 @@ app.post('/threads', (req, res) => {
   }
 
   const threads = loadThreads();
-  const newThread = {
-    id: Date.now(),
+  const newThread = {                                                                id: Date.now(),
     title,
     content,
     author,
-    category,
-    tags: tags || [],
-    isPinned: isPinned || false,
-    isLocked: isLocked || false,
+    category,                                                                        tags: tags || [],
+    isPinned: isPinned || false,                                                     isLocked: isLocked || false,
     votes: votes || 0,
     createdAt: createdAt || new Date().toISOString(),
-    updatedAt: updatedAt || new Date().toISOString()
-  };
-  threads.push(newThread);
-  saveThreads(threads);
+    updatedAt: updatedAt || new Date().toISOString()                               };
+  threads.push(newThread);                                                         saveThreads(threads);
   res.json(newThread);
 });
 
 // REPLIES
 const REPLIES_FILE = './replies.json';
-function loadReplies() {
-  if (!fs.existsSync(REPLIES_FILE)) return [];
-  const data = fs.readFileSync(REPLIES_FILE, 'utf8');
-  return data ? JSON.parse(data) : [];
+function loadReplies() {                                                           if (!fs.existsSync(REPLIES_FILE)) return [];
+  const data = fs.readFileSync(REPLIES_FILE, 'utf8');                              return data ? JSON.parse(data) : [];
 }
 function saveReplies(replies) {
   fs.writeFileSync(REPLIES_FILE, JSON.stringify(replies, null, 2));
 }
 app.get('/replies', (req, res) => {
-  const { threadId } = req.query;
-  const replies = loadReplies();
+  const { threadId } = req.query;                                                  const replies = loadReplies();
   if (threadId) { return res.json(replies.filter(r => r.threadId == threadId)); }
   res.json(replies);
 });
