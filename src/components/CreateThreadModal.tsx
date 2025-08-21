@@ -59,10 +59,10 @@ export default function CreateThreadModal({ isOpen, onClose, categories }: Creat
         title: title.trim(),
         content: content.trim(),
         author: {
-          id: user.id,
-          username: user.username,
+          id: user.email || String(Date.now()),
+          username: user.name || user.email || 'User',
           avatar: user.avatar,
-          reputation: user.reputation,
+          reputation: user.reputation || 0,
         },
         category: categoryObj,
         tags,

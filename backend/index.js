@@ -11,13 +11,33 @@ const USERS_FILE = './users.json';
 function loadUsers() {
   if (!fs.existsSync(USERS_FILE)) return [];
   const data = fs.readFileSync(USERS_FILE, 'utf8');
-  return data ? JSON.parse(data) : [];
+  const users = data ? JSON.parse(data) : [];
+  // Auto-migrate any plaintext passwords to SHA-256 hashes
+  return migrateUsersPasswords(users);
 }
 function saveUsers(users) {
   fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
 }
 function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+// Detect if a string is a SHA-256 hex digest
+function isSha256Hex(value) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
+}
+
+// Migrate any user records that still store plaintext passwords
+function migrateUsersPasswords(users) {
+  let migrated = false;
+  for (const user of users) {
+    if (user && user.password && !isSha256Hex(user.password)) {
+      user.password = hashPassword(String(user.password));
+      migrated = true;
+    }
+  }
+  if (migrated) saveUsers(users);
+  return users;
 }
 
 // Generate paraphrase: 5 karakter acak (huruf besar, kecil, angka)
@@ -89,10 +109,26 @@ app.post('/users', async (req, res) => {
 // LOGIN multi-entitas
 app.post('/login', (req, res) => {
   const { email, password, fingerprint, totp, challengeResponse } = req.body;
+  if (!email || !password || !fingerprint || !totp) {
+    return res.status(400).json({ error: 'Email, password, fingerprint, dan TOTP wajib diisi' });
+  }
   const users = loadUsers();
   const hashed = hashPassword(password);
-  const user = users.find(u => u.email === email && u.password === hashed);
-  if (!user) return res.status(401).json({ error: 'Email/password salah' });     
+  let user = users.find(u => u.email === email && u.password === hashed);
+
+  // If not found, attempt migration for legacy plaintext passwords for this user
+  if (!user) {
+    const candidate = users.find(u => u.email === email);
+    if (candidate && candidate.password && !isSha256Hex(candidate.password)) {
+      if (candidate.password === password) {
+        candidate.password = hashed;
+        saveUsers(users);
+        user = candidate;
+      }
+    }
+  }
+
+  if (!user) return res.status(401).json({ error: 'Email/password salah' });
   // Device check
   const trusted = user.trustedDevices?.find(d => d.fingerprint === fingerprint);
   if (!trusted) return res.status(403).json({ error: 'Device not trusted' });    
@@ -227,7 +263,44 @@ function loadThreads() {
 function saveThreads(threads) {
   fs.writeFileSync(THREADS_FILE, JSON.stringify(threads, null, 2));
 }
-app.get('/threads', (req, res) => { res.json(loadThreads()); });
+
+// Normalize thread shape for frontend compatibility
+function normalizeThread(raw) {
+  const safeAuthor = raw.author && typeof raw.author === 'object' ? raw.author : {};
+  const safeCategory = raw.category && typeof raw.category === 'object' ? raw.category : {};
+  const createdAt = raw.createdAt ? new Date(raw.createdAt).toISOString() : new Date().toISOString();
+  const updatedAt = raw.updatedAt ? new Date(raw.updatedAt).toISOString() : createdAt;
+  return {
+    id: String(raw.id ?? Date.now()),
+    title: String(raw.title ?? ''),
+    content: String(raw.content ?? ''),
+    author: {
+      id: String(safeAuthor.id ?? 'unknown'),
+      username: String(safeAuthor.username ?? 'Unknown'),
+      avatar: String(safeAuthor.avatar ?? 'https://www.gravatar.com/avatar/00000000000000000000000000000000?d=identicon'),
+      reputation: Number(safeAuthor.reputation ?? 0),
+    },
+    category: {
+      id: String(safeCategory.id ?? 'c1'),
+      name: String(safeCategory.name ?? 'General'),
+      description: String(safeCategory.description ?? 'General discussion'),
+      color: String(safeCategory.color ?? '#4a74ff'),
+    },
+    createdAt,
+    updatedAt,
+    votes: Number(raw.votes ?? 0),
+    replyCount: Number(raw.replyCount ?? 0),
+    isLocked: Boolean(raw.isLocked ?? false),
+    isPinned: Boolean(raw.isPinned ?? false),
+    tags: Array.isArray(raw.tags) ? raw.tags : [],
+    // keep any other fields untouched if needed
+  };
+}
+
+app.get('/threads', (req, res) => {
+  const normalized = loadThreads().map(normalizeThread);
+  res.json(normalized);
+});
 app.post('/threads', (req, res) => {
   const {
     title,
@@ -247,13 +320,14 @@ app.post('/threads', (req, res) => {
   }
 
   const threads = loadThreads();
-  const newThread = {                                                                id: Date.now(),
+  const newThread = {                                                                id: String(Date.now()),
     title,
     content,
     author,
     category,                                                                        tags: tags || [],
     isPinned: isPinned || false,                                                     isLocked: isLocked || false,
     votes: votes || 0,
+    replyCount: 0,
     createdAt: createdAt || new Date().toISOString(),
     updatedAt: updatedAt || new Date().toISOString()                               };
   threads.push(newThread);                                                         saveThreads(threads);
@@ -270,14 +344,20 @@ function saveReplies(replies) {
 }
 app.get('/replies', (req, res) => {
   const { threadId } = req.query;                                                  const replies = loadReplies();
-  if (threadId) { return res.json(replies.filter(r => r.threadId == threadId)); }
-  res.json(replies);
+  const normalizeReply = (r) => ({
+    ...r,
+    id: String(r.id ?? Date.now()),
+    createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : new Date().toISOString(),
+    votes: Number(r.votes ?? 0),
+  });
+  const out = threadId ? replies.filter(r => r.threadId == threadId).map(normalizeReply) : replies.map(normalizeReply);
+  res.json(out);
 });
 app.post('/replies', (req, res) => {
   const { threadId, author, content } = req.body;
   if (!threadId || !author || !content) return res.status(400).json({ error: 'Semua field wajib' });
   const replies = loadReplies();
-  const newReply = { id: Date.now(), threadId, author, content, createdAt: Date.now() };
+  const newReply = { id: String(Date.now()), threadId, author, content, createdAt: new Date().toISOString(), votes: 0 };
   replies.push(newReply);
   saveReplies(replies);
   res.json(newReply);
