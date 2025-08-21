@@ -29,7 +29,12 @@ export default function Login({ onSuccess }: { onSuccess?: () => void }) {      
       if (!res.ok) {                                                                     setError(data?.error || 'Login gagal!');
         setLoading(false);                                                               return;
       }
-      login(data);
+      // Map backend user shape to AuthContext.login signature
+      login({
+        name: data?.username || data?.name || email.trim(),
+        email: data?.email || email.trim(),
+        avatar: data?.avatar,
+      });
       setLoading(false);
       if (onSuccess) onSuccess();
     } catch {                                                                          setError('Gagal login, coba lagi nanti.');
